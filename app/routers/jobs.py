@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 from typing import List
 from app.models.job import JobCreate, JobResponse, JobUpdate
 from app.services.supabase_client import supabase_service
 from app.services.sqs_client import sqs_service
+from app.dependencies.auth import get_current_user_id, get_optional_user_id
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -10,15 +11,17 @@ router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 @router.post(
     "/submit-job", response_model=JobResponse, status_code=status.HTTP_201_CREATED
 )
-async def submit_job(job: JobCreate):
+async def submit_job(
+    job: JobCreate, current_user_id: str = Depends(get_current_user_id)
+):
     """
-    Submit a new training job
-    1. Store in Supabase with status 'pending'
+    Submit a new training job (requires authentication)
+    1. Store in Supabase with status 'pending' and user_id
     2. Push job ID to SQS queue
     """
     try:
-        # Create job in Supabase
-        created_job = await supabase_service.create_job(job)
+        # Create job in Supabase with user_id
+        created_job = await supabase_service.create_job(job, current_user_id)
 
         # Prepare job data for queue
         job_data = {
@@ -26,6 +29,7 @@ async def submit_job(job: JobCreate):
             "model_type": job.model_type,
             "dataset_path": job.dataset_path,
             "hyperparameters": job.hyperparameters,
+            "user_id": current_user_id,
         }
 
         # Send to SQS queue
@@ -34,17 +38,20 @@ async def submit_job(job: JobCreate):
         )
 
         if not queue_success:
-            # If queue fails, we could update job status to failed
+            # If queue fails, update job status to failed
             await supabase_service.update_job(
                 created_job.id,
                 JobUpdate(status="failed", error_message="Failed to queue job"),
+                current_user_id,
             )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Job created but failed to queue for processing",
             )
 
-        print(f"Job {created_job.id} created and queued successfully")
+        print(
+            f"Job {created_job.id} created and queued successfully for user {current_user_id}"
+        )
         return created_job
 
     except Exception as e:
@@ -55,8 +62,24 @@ async def submit_job(job: JobCreate):
 
 
 @router.get("/", response_model=List[JobResponse])
+async def get_user_jobs(current_user_id: str = Depends(get_current_user_id)):
+    """Get all jobs for the authenticated user"""
+    try:
+        jobs = await supabase_service.get_jobs_by_user(current_user_id)
+        return jobs
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch jobs: {str(e)}",
+        )
+
+
+@router.get("/all", response_model=List[JobResponse])
 async def get_all_jobs():
-    """Get all jobs for dashboard"""
+    """
+    Get all jobs (admin endpoint - no authentication for now)
+    This can be used by Modal or other services to process jobs
+    """
     try:
         jobs = await supabase_service.get_all_jobs()
         return jobs
@@ -68,13 +91,14 @@ async def get_all_jobs():
 
 
 @router.get("/{job_id}", response_model=JobResponse)
-async def get_job(job_id: str):
-    """Get specific job by ID"""
+async def get_job(job_id: str, current_user_id: str = Depends(get_current_user_id)):
+    """Get specific job by ID (only if it belongs to the user)"""
     try:
-        job = await supabase_service.get_job_by_id(job_id)
+        job = await supabase_service.get_job_by_id(job_id, current_user_id)
         if not job:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job not found or access denied",
             )
         return job
     except HTTPException:
@@ -87,13 +111,20 @@ async def get_job(job_id: str):
 
 
 @router.put("/{job_id}/status", response_model=JobResponse)
-async def update_job_status(job_id: str, update: JobUpdate):
-    """Update job status (used by Modal or other services)"""
+async def update_job_status(
+    job_id: str, update: JobUpdate, user_id: str = Depends(get_optional_user_id)
+):
+    """
+    Update job status (used by Modal or other services)
+    If user_id is provided, will only update jobs belonging to that user
+    If no user_id (unauthenticated), can update any job (for Modal service)
+    """
     try:
-        updated_job = await supabase_service.update_job(job_id, update)
+        updated_job = await supabase_service.update_job(job_id, update, user_id)
         if not updated_job:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Job not found or access denied",
             )
         return updated_job
     except HTTPException:

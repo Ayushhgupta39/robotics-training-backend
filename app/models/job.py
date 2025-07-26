@@ -20,6 +20,7 @@ class JobCreate(BaseModel):
 
 class JobResponse(BaseModel):
     id: str
+    user_id: str
     name: str
     status: JobStatus
     created_at: datetime
