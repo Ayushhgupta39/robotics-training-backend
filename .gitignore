@@ -39,3 +39,5 @@ wheels/
 # OS
 .DS_Store
 Thumbs.db
+
+task-definition.json
