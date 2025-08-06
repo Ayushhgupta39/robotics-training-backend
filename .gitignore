@@ -41,3 +41,4 @@ wheels/
 Thumbs.db
 
 task-definition.json
+.env.docker

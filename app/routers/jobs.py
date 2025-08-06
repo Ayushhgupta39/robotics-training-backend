@@ -108,29 +108,3 @@ async def get_job(job_id: str, current_user_id: str = Depends(get_current_user_i
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch job: {str(e)}",
         )
-
-
-@router.put("/{job_id}/status", response_model=JobResponse)
-async def update_job_status(
-    job_id: str, update: JobUpdate, user_id: str = Depends(get_optional_user_id)
-):
-    """
-    Update job status (used by Modal or other services)
-    If user_id is provided, will only update jobs belonging to that user
-    If no user_id (unauthenticated), can update any job (for Modal service)
-    """
-    try:
-        updated_job = await supabase_service.update_job(job_id, update, user_id)
-        if not updated_job:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Job not found or access denied",
-            )
-        return updated_job
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update job: {str(e)}",
-        )
